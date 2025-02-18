@@ -1,0 +1,258 @@
+---
+const routeNames = [
+   "ARB",
+   "BASE",
+   "BSC",
+   "ETH",
+   "MULT",
+   "POL",
+   "SOL",
+   "TRON"
+];
+
+const currentPath = Astro.url.pathname;
+---
+
+<nav>
+   <ul>
+      {
+         routeNames.map((route) => (
+            <li>
+               <a
+                  aria-current={currentPath.includes(route.toLowerCase()) ? "page" : null}
+                  href={`/${route.toLowerCase()}`}
+               >
+                  {route}
+               </a>
+            </li>
+         ))
+      }
+   </ul>
+</nav>
+
+<script>
+   import { planets } from "../config/planets";
+   
+   let isTransitioning = false;
+   const transitionDuration = 1000; // ms
+
+   // Wait for canvas initialization
+   function waitForCanvas() {
+      return new Promise(resolve => {
+         const check = () => {
+            const canvas = document.querySelector('canvas');
+            if (canvas && canvas.__uniforms) {
+               resolve(canvas);
+            } else {
+               requestAnimationFrame(check);
+            }
+         };
+         check();
+      });
+   }
+
+   async function smoothTransition(fromPlanet, toPlanet, direction, callback) {
+      if (isTransitioning) return;
+      
+      const canvas = await waitForCanvas();
+      const uniforms = canvas.__uniforms;
+      
+      isTransitioning = true;
+      const startTime = Date.now();
+
+      // Calculate start and target positions based on scroll direction
+      const viewportWidth = 10; // Width of viewport in world units
+      const startCameraPos = [...uniforms.uCameraPosition];
+      const startPlanetPos = [...uniforms.uPlanetPosition];
+      
+      // Handle circular navigation
+      const planetKeys = Object.keys(planets);
+      const fromIndex = planetKeys.indexOf(fromPlanet.name.toLowerCase());
+      const toIndex = planetKeys.indexOf(toPlanet.name.toLowerCase());
+      
+      // Direction is now purely based on scroll direction
+      // 'next' means scrolling down, planet comes from right
+      // 'prev' means scrolling up, planet comes from left
+      const initialOffset = direction === 'next' ? viewportWidth : -viewportWidth;
+      const oldPlanetStartPos = [...startPlanetPos];
+      const newPlanetStartPos = [toPlanet.position[0] + initialOffset, toPlanet.position[1], toPlanet.position[2]];
+
+      function animate() {
+         const elapsed = Date.now() - startTime;
+         const progress = Math.min(elapsed / transitionDuration, 1);
+         
+         // Smooth easing function
+         const eased = 1 - Math.pow(1 - progress, 3);
+
+         // Move current planet out in the opposite direction
+         const exitOffset = direction === 'next' ? -viewportWidth : viewportWidth;
+         const oldPlanetX = oldPlanetStartPos[0] + (exitOffset * eased);
+         
+         // Move new planet into view
+         const newPlanetX = newPlanetStartPos[0] + (initialOffset * (1 - eased));
+         
+         // Update camera position
+         const targetCameraPos = [toPlanet.position[0], 0, uniforms.uCameraPosition[2]];
+         uniforms.uCameraPosition[0] = startCameraPos[0] + (targetCameraPos[0] - startCameraPos[0]) * eased;
+
+         // Update planet position
+         uniforms.uPlanetPosition[0] = newPlanetX;
+
+         if (progress === 1) {
+            // Set final position
+            uniforms.uPlanetPosition = toPlanet.position;
+            uniforms.uCameraPosition = targetCameraPos;
+            isTransitioning = false;
+            if (callback) callback();
+         } else {
+            requestAnimationFrame(animate);
+         }
+      }
+
+      animate();
+   }
+
+   async function navigateToPlanet(planetKey, direction, pushState = true) {
+      if (isTransitioning) return;
+
+      const currentPlanetKey = window.location.pathname.split('/').pop() || 'bsc';
+      const currentConfig = planets[currentPlanetKey];
+      const newConfig = planets[planetKey.toLowerCase()];
+      
+      if (!newConfig || !currentConfig) return;
+
+      // Get the initPlanet function from the [planet].astro component
+      const initPlanet = (window as any).__initPlanet;
+      if (!initPlanet) return;
+
+      // First update the planet state
+      await initPlanet(planetKey.toLowerCase());
+      
+      // Then handle the transition
+      await smoothTransition(currentConfig, newConfig, direction, () => {
+         if (pushState) {
+            window.history.pushState({}, '', `/${planetKey.toLowerCase()}`);
+         }
+         document.querySelector('h1').textContent = newConfig.name;
+         
+         // Update active navigation
+         document.querySelectorAll('nav a').forEach(link => {
+            link.setAttribute('aria-current', 
+               link.getAttribute('href') === `/${planetKey.toLowerCase()}` ? 'page' : null
+            );
+         });
+      });
+   }
+
+   // Initialize first planet after canvas is ready
+   window.addEventListener("DOMContentLoaded", async () => {
+      await waitForCanvas();
+      const currentPlanet = window.location.pathname.split('/').pop() || 'bsc';
+      navigateToPlanet(currentPlanet, 'next', false);
+   });
+
+   // Handle navigation clicks
+   document.addEventListener('click', (e) => {
+      const link = e.target.closest('a');
+      if (link && link.getAttribute('href')?.startsWith('/')) {
+         e.preventDefault();
+         const planetKey = link.getAttribute('href').split('/').pop();
+         navigateToPlanet(planetKey, 'next');
+      }
+   });
+
+   // Handle keyboard navigation
+   window.addEventListener('keydown', (e) => {
+      const planetKeys = Object.keys(planets);
+      const currentIndex = planetKeys.indexOf(window.location.pathname.split('/').pop() || 'bsc');
+      
+      let newIndex;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+         newIndex = currentIndex > 0 ? currentIndex - 1 : planetKeys.length - 1;
+         navigateToPlanet(planetKeys[newIndex], 'prev');
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+         newIndex = currentIndex < planetKeys.length - 1 ? currentIndex + 1 : 0;
+         navigateToPlanet(planetKeys[newIndex], 'next');
+      }
+   });
+
+   // Handle scroll navigation
+   let lastScrollTime = 0;
+   const scrollThreshold = 500; // ms between scroll events
+
+   window.addEventListener('wheel', (e) => {
+      const currentTime = Date.now();
+      if (currentTime - lastScrollTime < scrollThreshold) return;
+      
+      const planetKeys = Object.keys(planets);
+      const currentIndex = planetKeys.indexOf(window.location.pathname.split('/').pop() || 'bsc');
+      
+      let newIndex;
+      let direction;
+      
+      if (e.deltaY > 0 || e.deltaX > 0) { // Scroll down/right
+         direction = 'next';
+         newIndex = currentIndex < planetKeys.length - 1 ? currentIndex + 1 : 0;
+      } else { // Scroll up/left
+         direction = 'prev';
+         newIndex = currentIndex > 0 ? currentIndex - 1 : planetKeys.length - 1;
+      }
+      
+      navigateToPlanet(planetKeys[newIndex], direction);
+      lastScrollTime = currentTime;
+   });
+
+   // Handle browser back/forward buttons
+   window.addEventListener('popstate', () => {
+      const planetKey = window.location.pathname.split('/').pop() || 'bsc';
+      navigateToPlanet(planetKey, 'next', false);
+   });
+</script>
+
+<style lang="scss">
+   nav {
+      max-width: 100%;
+      overflow: auto;
+      padding: 0.75em 1em;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      &::-webkit-scrollbar {
+         display: none;
+      }
+
+      ul {
+         display: flex;
+         gap: clamp(0.5em, 2vw, 1em);
+         list-style-type: none;
+         padding: 0 0.5em;
+      }
+
+      a {
+         text-decoration: none;
+         opacity: 0.8;
+         transition: opacity 0.3s ease;
+         font-size: clamp(0.875rem, 2vw + 0.5rem, 1.125rem);
+         padding: 0.5em 0.75em;
+         white-space: nowrap;
+      }
+
+      a:is(:hover, [aria-current="page"]) {
+         opacity: 1;
+      }
+
+      a[aria-current="page"] {
+         font-weight: bold;
+      }
+
+      @media (max-width: 768px) {
+         position: fixed;
+         bottom: 0;
+         left: 0;
+         width: 100%;
+         background: rgba(0, 0, 0, 0.75);
+         backdrop-filter: blur(10px);
+         -webkit-backdrop-filter: blur(10px);
+         z-index: 100;
+      }
+   }
+</style>

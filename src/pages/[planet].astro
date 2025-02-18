@@ -1,0 +1,187 @@
+---
+import Canvas from "../components/Canvas.astro";
+import Footer from "../components/Footer.astro";
+import MainNavigation from "../components/MainNavigation.astro";
+import CryptoTable from "../components/CryptoTable.astro";
+import Layout from "../layouts/Layout.astro";
+import { planets } from "../config/planets";
+
+export function getStaticPaths() {
+  return Object.keys(planets).map(planet => ({
+    params: { planet },
+    props: { config: planets[planet] }
+  }));
+}
+
+const { planet } = Astro.params;
+const { config } = Astro.props;
+
+const coinIds = {
+  eth: 'razxDUgYGNAdQ',
+  bsc: 'WcwrkfNI4FUAe',
+  arb: '1Uo6s62Oc',
+  base: 'aFCovYtljC',
+  mult: 'omwkOTglq',
+  pol: 'iDZ0tG-wI',
+  sol: 'zNZHO_Sjf',
+  tron: 'qUhEFk1I61atv'
+};
+
+const options = {
+  headers: {
+    'x-access-token': 'coinranking3dc21bcfbf427db91bdb338105fdba2a948b081530382ec2'
+  }
+};
+
+let cryptoData = null;
+try {
+  const response = await fetch(`https://api.coinranking.com/v2/coin/${coinIds[planet]}`, options);
+  const result = await response.json();
+  cryptoData = result.data.coin;
+} catch (error) {
+  console.error('Error fetching crypto data:', error);
+}
+---
+
+<Layout title={config.name} description={`An artistic view of ${config.name} from space.`}>
+  <Canvas />
+  <CryptoTable data={cryptoData} />
+  <Footer>
+    <MainNavigation />
+  </Footer>
+</Layout>
+
+<script>
+import { useGlslCanvas } from "../webgl/renderer";
+import vertexShader from "../webgl/shaders/vertex.glsl";
+import fragmentShader from "../webgl/shaders/planet.fragment.glsl";
+import { loadTextures } from "../webgl/loaders/texture.loader";
+import { defaultUniforms } from "../webgl/settings/uniforms";
+import { setupControls } from "../controls/setup";
+import { planets } from "../config/planets";
+
+let currentCanvas;
+let currentUniforms;
+let textureCache = new Map();
+let currentPlanetKey = '';
+let transitionPlanetKey = '';
+
+async function loadPlanetTexture(planetKey) {
+  if (textureCache.has(planetKey)) {
+    return textureCache.get(planetKey);
+  }
+
+  const config = planets[planetKey];
+  const [texture] = await loadTextures([{ path: config.texturePath }]);
+  
+  if (textureCache.size >= 2) {
+    for (const [key] of textureCache) {
+      if (key !== currentPlanetKey && key !== transitionPlanetKey) {
+        textureCache.delete(key);
+        break;
+      }
+    }
+  }
+  
+  textureCache.set(planetKey, texture);
+  return texture;
+}
+
+async function initPlanet(planetKey) {
+  const config = planets[planetKey];
+  if (!config) return;
+
+  const texture = await loadPlanetTexture(planetKey);
+
+  if (!currentCanvas) {
+    const result = useGlslCanvas({
+      vertex: vertexShader,
+      fragment: fragmentShader,
+      uniforms: {
+        ...defaultUniforms,
+        uPlanetRadius: 1,
+        uRotationSpeed: 5,
+        uPlanetPosition: config.position,
+        uCameraPosition: [config.position[0], 0, 6],
+        uAtmosphereColor: config.atmosphere.color,
+        uAtmosphereDensity: config.atmosphere.density,
+        uBumpStrength: config.bumpStrength || 0.01,
+        uQuality: Math.min(window.devicePixelRatio, 2),
+        uPlanetColor: texture
+      },
+    });
+    currentCanvas = result.canvas;
+    currentUniforms = result.uniforms;
+    currentCanvas.__uniforms = currentUniforms;
+    setupControls({ canvas: currentCanvas, uniforms: currentUniforms });
+  } else {
+    currentUniforms.uPlanetColor = texture;
+    currentUniforms.uPlanetPosition = config.position;
+    currentUniforms.uAtmosphereColor = config.atmosphere.color;
+    currentUniforms.uAtmosphereDensity = config.atmosphere.density;
+    currentUniforms.uBumpStrength = config.bumpStrength || 0.01;
+  }
+
+  currentPlanetKey = planetKey;
+
+  const planetKeys = Object.keys(planets);
+  const currentIndex = planetKeys.indexOf(planetKey);
+  const nextKey = planetKeys[(currentIndex + 1) % planetKeys.length];
+  const prevKey = planetKeys[(currentIndex - 1 + planetKeys.length) % planetKeys.length];
+  
+  const preloadKey = transitionPlanetKey === nextKey ? nextKey : prevKey;
+  transitionPlanetKey = preloadKey;
+  loadPlanetTexture(preloadKey);
+
+  document.title = `${config.name} | Interactive 3D planet animation`;
+  document.querySelector('h1').textContent = config.name;
+
+  // Update crypto data
+  const coinIds = {
+    eth: 'razxDUgYGNAdQ',
+    bsc: 'WcwrkfNI4FUAe',
+    arb: '1Uo6s62Oc',
+    base: 'aFCovYtljC',
+    mult: 'omwkOTglq',
+    pol: 'iDZ0tG-wI',
+    sol: 'zNZHO_Sjf',
+    tron: 'qUhEFk1I61atv'
+  };
+
+  try {
+    const response = await fetch(`https://api.coinranking.com/v2/coin/${coinIds[planetKey]}`, {
+      headers: {
+        'x-access-token': 'coinranking3dc21bcfbf427db91bdb338105fdba2a948b081530382ec2'
+      }
+    });
+    const result = await response.json();
+    const cryptoData = result.data.coin;
+    
+    // Update table data using the global function
+    if (window.updateCryptoTable) {
+      window.updateCryptoTable(cryptoData);
+    }
+  } catch (error) {
+    console.error('Error fetching crypto data:', error);
+  }
+}
+
+(window as any).__initPlanet = initPlanet;
+
+const initialPlanet = window.location.pathname.split('/').pop() || 'bsc';
+initPlanet(initialPlanet);
+
+document.addEventListener('click', async (e) => {
+  const link = e.target.closest('a');
+  if (link && link.getAttribute('href')?.startsWith('/')) {
+    e.preventDefault();
+    const planetKey = link.getAttribute('href').split('/').pop();
+    await initPlanet(planetKey);
+  }
+});
+
+window.addEventListener('popstate', async () => {
+  const planetKey = window.location.pathname.split('/').pop() || 'bsc';
+  await initPlanet(planetKey);
+});
+</script>
